@@ -352,10 +352,6 @@ def add_xy(input):
         print(f"Error executing add_xy: {str(e)}") 
 
 
-###########
-###########     PASS 1 - UP TO HERE
-###########
-
 # Generate  a list of targetted rare species from in_RARETABLE to use in selection loops
 with arcpy.da.SearchCursor(in_RARETABLE, "TAXON_CODE", "TAXON_CODE > 0") as cursor:
     rarelist = ",".join(str(row[0]) for row in cursor)
@@ -512,7 +508,7 @@ if "forests" in theme_list:
 
     # create local values layer
     arcpy.conversion.FeatureClassToFeatureClass(in_BURN, os.path.join(workpath, outGDB), "FOP_Gipps", "REGION = 'Gippsland'",
-                                                field_mapping=field_map)
+                                                 field_mapping=field_map)
     
     # add and populate Value_Type field
     add_and_fill_text_field("FOP_Gipps", "Value_Type", "Joint Fuel Management Plan Site")
@@ -532,97 +528,108 @@ if "forests" in theme_list:
     # add and populate Value_Type field
     add_and_fill_text_field("TRP", "Value_Type", "TRP Coupe")
 
-    #### POWERLINE DATA
+
+    #### UTILITIES DATA
     print("   Creating one-off Utilities data...")
 
     # field mapping for consistent value identifiers and description
-    field_map = arcpy.FieldMappings()
-    field_map.addTable(in_POWRLINE)
-    field_map.findFieldMapIndex("FEATURE_TYPE").outputField.name = "Value"
-    field_map.findFieldMapIndex("FEATURE_TYPE").outputField.name = "Value"
+    power_field_map = arcpy.FieldMappings()
+    power_field_map.addTable(in_POWRLINE)
+    power_field_map.findFieldMapIndex("FEATURE_TYPE").outputField.name = "Value"
 
-    arcpy.management.Copy(in_POWRLINE, "POWRLINE")
-    arcpy.management.AlterField("POWRLINE", "FEATURE_TYPE", "Value", "Value")
-    arcpy.management.AddField("POWRLINE", "Value_Description", "TEXT", 255)
-    arcpy.management.CalculateField("POWRLINE", "Value_Description", "!FEATURE_SUBTYPE! + ' ' + !VOLTAGE!",
-                                    "PYTHON3")
-    arcpy.management.AddField("POWRLINE", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("POWRLINE", "Value_Type", '"Powerline"', "PYTHON3")
+    pipe_field_map = arcpy.FieldMappings()
+    pipe_field_map.addTable(in_PIPELINE)
+    pipe_field_map.findFieldMapIndex("NAME_LABEL").outputField.name = "Value"
+    pipe_field_map.findFieldMapIndex("FEATURE_SUBTYPE").outputField.name = "Value_Description"
 
-    arcpy.conversion.FeatureClassToFeatureClass(in_PIPELINE, workpath + "//" + outGDB, "PIPELINE",
-                                                "FEATURE_TYPE = 'pipeline'")
-    arcpy.management.AlterField("PIPELINE", "NAME_LABEL", "Value", "Value")
-    arcpy.management.AlterField("PIPELINE", "FEATURE_SUBTYPE", "Value_Description", "Value_Description")
-    arcpy.management.AddField("PIPELINE", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("PIPELINE", "Value_Type", '"Pipeline"', "PYTHON3")
+    # create temp values layers
+    arcpy.conversion.FeatureClassToFeatureClass(in_PIPELINE, "in_memory", "temp_pipe", "PIPELINE", "FEATURE_TYPE = 'pipeline'", field_mapping=pipe_field_map)
+    arcpy.conversion.FeatureClassToFeatureClass(in_POWRLINE, "in_memory", "temp_powr", field_mapping=power_field_map)
 
-    arcpy.management.Merge(["PIPELINE", "POWRLINE"], "Utilities")
-    for fc in "POWRLINE", "PIPELINE":
-        arcpy.management.Delete(fc)
+    # add and populate missing/aggregate fields
+    add_and_fill_text_field("in_memory\\temp_powr", "Value_Description", "!FEATURE_SUBTYPE! + ' ' + !VOLTAGE!")
+    add_and_fill_text_field("in_memory\\temp_powr", "Value_Type", "Powerline")
+    add_and_fill_text_field("in_memory\\temp_pipe", "Value_Type", "Pipeline")
 
+    # merge temporary leyers to gdb
+    arcpy.management.Merge(["in_memory\\temp_pipe", "in_memory\\temp_powr"], "Utilities")
+
+
+    #### RAILWAY
     print("   Creating one-off Railway data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_RAIL, workpath + "//" + outGDB,
-                                                "RAIL")  # "FEATURE_TYPE_CODE NOT IN('rail_dismantled', 'bridge_rail_dm','tram_dismantled', 'tunnel_rail_dm')")  #Dismantled could have be historic heritage
-    arcpy.management.AlterField("RAIL", "NAME", "Value", "Value")  # NAME
-    arcpy.management.AlterField("RAIL", "FEATURE_TYPE_CODE", "Value_Description",
-                                "Value_Description")  # "FEATURE_TYPE_CODE"
-    arcpy.management.AddField("RAIL", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("RAIL", "Value_Type", '"Railway"', "PYTHON3")
-    arcpy.management.MakeFeatureLayer("RAIL", "RAILlyr")
-    arcpy.management.SelectLayerByAttribute("RAILlyr", "NEW_SELECTION", "Value IS NULL")
-    arcpy.management.CalculateField("RAILlyr", "Value", '"Unnamed"', "PYTHON3")
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_RAIL)
+    field_map.findFieldMapIndex("NAME").outputField.name = "Value"
+    field_map.findFieldMapIndex("FEATURE_TYPE_CODE").outputField.name = "Value_Description"
+
+    # create local values layer
+    arcpy.conversion.FeatureClassToFeatureClass(in_RAIL, os.path.join(workpath, outGDB), "RAIL", field_mapping=field_map)
+
+    # Rename empty values 
+    arcpy.management.CalculateField("RAIL", "Value", '"Unnamed" if !Value! is None else !Value!', "PYTHON3")
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("RAIL", "Value_Type", "TRP Railway")
+
+
+    #### APIARY
     print("   Creating one-off Apiary layer...")
-    # Apiary updated to all include an ID number
+
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_APIARY)
+    field_map.findFieldMapIndex("TENURE_ID").outputField.name = "Value"
+    field_map.findFieldMapIndex("FEATURE_TYPE_CODE").outputField.name = "Value_Description"
+
+    # create local values layer
     arcpy.management.Copy(in_APIARY, "bee")
-    arcpy.management.AddField("bee", "Value_Type", "TEXT", 50)
-    arcpy.management.AddField("bee", "Value_ID", "TEXT", 50)
-    arcpy.management.CalculateField("bee", "Value_Type", '"Apiary Site"', "PYTHON3")
-    arcpy.management.CalculateField("bee", "Value_ID", '!TENURE_ID!', "PYTHON3")
-    arcpy.management.AlterField("bee", "TENURE_ID", "Value", "Value")
-    arcpy.management.AddField("bee", "X", "DOUBLE", "", "0", "10")  # - add easting northing
-    arcpy.management.AddField("bee", "Y", "DOUBLE", "", "0", "10")
-    # arcpy.management.MakeFeatureLayer ("bee", "tempbeelyr")
-    # arcpy.management.SelectLayerByAttribute ("tempbeelyr", "NEW_SELECTION", "Value IN('', NULL, '0', '            ', '            0')")
-    # arcpy.management.CalculateField("tempbeelyr", "Value", "!TENURE_ID!", "PYTHON3")
-    with arcpy.da.UpdateCursor("bee", ['SHAPE@X', 'SHAPE@Y', "X", "Y"], spatial_reference=srfilez) as cursor:
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
-            cursor.updateRow(row)
+    arcpy.conversion.FeatureClassToFeatureClass(in_APIARY, os.path.join(workpath, outGDB), "bee", field_mapping=field_map)
+
+    # add coordinates
+    add_xy("bee")
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("bee", "Value_Type", "Apiary Site")
 
 if "biodiversity" in theme_list:
 
     print("   Setting up VBA template...")
     arcpy.management.Copy(templateGDB + "\\VBA_template_z55_V5", "VBA_outputs")
 
-    # arcpy.FeatureToPoint_management(in_VBAFL25, "ztempfl25", "CENTROID") #temporary line while VBA_FLORA25 is currently saved as a multipoint, remove when resolved
 
+    #### BIODIVERSITY MONITORING
     print("   Creating one-off biodivesity monitoring data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_MONITOR, workpath + "\\" + outGDB, "monflorafauna",
-                                                "(SITE_CATEGORY IN('FAUNA', 'FLORA') OR RISK_CODE = 'LittoralRF') AND TIMEFRAME <> 'NOT ACTIVE'")
-    arcpy.management.AddField("monflorafauna", "TYPE", "TEXT", 15)
-    arcpy.management.AddField("monflorafauna", "SCI_NAME", "TEXT", 255)
-    arcpy.management.AddField("monflorafauna", "COMM_NAME", "TEXT", 255)
-    arcpy.management.CalculateField("monflorafauna", "TYPE", "'Bio Monitoring'", "PYTHON3")
-    arcpy.management.CalculateField("monflorafauna", "SCI_NAME",
-                                    "str(!SITE_NAME!) + ' | ' + str(!SITE_PRESCRIPTIONS![0:150]) + ' | ' + str(!CONTACT!)",
-                                    "PYTHON3")  # add SITE_ID field? #deal with length here?
-    arcpy.management.CalculateField("monflorafauna", "COMM_NAME", "!RISK_CODE!", "PYTHON3")
-    arcpy.management.AlterField("monflorafauna", "LMS_ID", "RECORD_ID", "RECORD_ID")
-    arcpy.management.AddField("monflorafauna", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("monflorafauna", "Y", "DOUBLE", "", "0", "10")
-    with arcpy.da.UpdateCursor("monflorafauna", ['SHAPE@X', 'SHAPE@Y', "X", "Y"],
-                               spatial_reference=srfilez) as cursor:  # add XY coordinates to monitoring sites, removed this part for security reasons?
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
-            cursor.updateRow(row)
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_MONITOR)
+    field_map.findFieldMapIndex("LMS_ID").outputField.name = "RECORD_ID"
+
+    # create local values layer
+    filter = "(SITE_CATEGORY IN('FAUNA', 'FLORA') OR RISK_CODE = 'LittoralRF') AND TIMEFRAME <> 'NOT ACTIVE'"
+    arcpy.conversion.FeatureClassToFeatureClass(in_MONITOR, os.path.join(workpath, outGDB), "monflorafauna", field_mapping=field_map)
+
+    # add and populate various fields
+    add_and_fill_text_field("monflorafauna", "SCI_NAME", '"str(!SITE_NAME!) + " | " + str(!SITE_PRESCRIPTIONS![0:150]) + " | " + str(!CONTACT!)"')
+    add_and_fill_text_field("monflorafauna", "COMM_NAME", "!RISK_CODE!")
+    add_and_fill_text_field("monflorafauna", "TYPE", "Bio Monitoring")
+
+    # add coordinates
+    add_xy("monflorafauna")
+
+
+# ===================================================================================================================================
 #     LOOPS TO CREATE SEARCHABLE THEME-BASED OVERLAY OUTPUTS BY DAP ACTIVITY
 # ===================================================================================================================================
 
-print("")
+
+
+###########
+###########     PASS 1 - UP TO HERE
+###########
+
 
 # field references
 reference_field = "DAP_REF_NO"  # set selection field name for ref number #DAP_REF_NO
@@ -634,7 +641,7 @@ DAPfields = ["DAP_REF_NO", "DAP_NAME", "SCHEDULE", "RISK_LVL", "DESCRIPTION", "A
 with arcpy.da.SearchCursor(works_features, district_field) as cursor:
     district_name = next(cursor)[0]
 
-print("Processing records for {district_name}")
+print("\nProcessing records for {district_name}")
 
 ## Create a background poly layer for state of Victoria or District. This is used on layers with non-contiguous features to fix an issue with intersect
 ##arcpy.conversion.FeatureClassToFeatureClass(in_VIC, workpath + "\\" + outGDB, "tempvic", "\"STATE\" = 'VIC' AND \"FEATURE_TYPE_CODE\" = 'mainland'" )
