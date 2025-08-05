@@ -675,6 +675,7 @@ for RiskLevel in RiskValues:
     arcpy.analysis.Buffer("DAP_temp", "DAP_buff1",
                           "1 meters")  # dissolve_option="LIST", dissolve_field=["DAP_REF_NO", "DAP_NAME", "DISTRICT", "SCHEDULE", "RISK_LVL", "DESCRIPTION", "AREA_HA", "LENGTH_KM", "Easting", "Northing", "BUFFER_TYPE"])
     arcpy.edit.Densify("DAP_buff1", "ANGLE", "", "", "0.10")
+    
     arcpy.analysis.Buffer("DAP_temp", "DAP_buff50", "50 meters", dissolve_option="LIST",
                           dissolve_field=["DAP_REF_NO", "DAP_NAME", "DISTRICT", "SCHEDULE", "RISK_LVL", "DESCRIPTION",
                                           "Easting", "Northing", "YEAR_WORKS", "AREA_HA", "LENGTH_KM", "Easting",
