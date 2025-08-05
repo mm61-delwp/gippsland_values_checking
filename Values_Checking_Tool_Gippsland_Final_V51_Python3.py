@@ -96,7 +96,7 @@
 #        V28        - 18 May 2021 - CH changes to LandInfo, PV district data added, handled Risk Registers differently (DAP risk reg no longer uses Risk_Landscape), xls outputs to be converted to csv, and additional output for works details(.gdb input in table form)
 #        V29        - 24 May 2021 - Changed how ACH sites and prelims reports are merged, Biodivesity now also avoid duplicate XYs for the same species, adding Quickbase key fields at the end (QB_ID)
 #        V30        - 07 Jun 2021 - Two new outputs made specific for QuickBase, combined versions for biodiversity + forests and heritage site + land info
-#        V31        - 18 Jun 2021 - Land info for heritage now part of broader Works detail (added to Works_Shapefile) - new biodiversity CAMS data added to rarelist species to expand the search for more taxons. SRO Values check added.
+#        V31        - 18 Jun 2021 - Land info for heritage now part of broader Works detail (added to works_features) - new biodiversity CAMS data added to rarelist species to expand the search for more taxons. SRO Values check added.
 #        V32        - 16 Sep 2021 - (not draft version) VBA restricted datasets, flora 25 and ARI_AQUA_CATCH added to biodiversity output. Victoria heritage register and Victorian heritage inventory also added to forests module
 #        V33        - 22 Sep 2021 - (not draft version) CH fixing and removed the now obsolete union and filtering processes to greatly speed up the CH checking process
 #        V34        - 28 Sep 2021 - EXTRA_INFO flattened in biodiversity theme to avoid QB_ID duplicates
@@ -124,193 +124,127 @@
 #                                   updated JFMP biodiversity outputs so the correct Risk Register is being used for both Burn Unit and Contingency Area, Works detail output for JFMP and NBFT have ASSET_ID renamed to FMS_ID
 # ==========================================================================
 
-print("Running the Values Checking tool")
 import arcpy, os, string, datetime, glob
 import pandas as pd
 from arcpy import env
 import json
 import requests
-from google.oauth2 import service_account
-from google.auth.transport.requests import Request
+# from google.oauth2 import service_account
+# from google.auth.transport.requests import Request
 
-# Start the timer to record how long the script takes to run.
-Start = datetime.datetime.now()
-StartTime = Start.strftime("%H:%M:%S")
 
-# Date of values check, this will be used for populating into the table outputs
-StartDate = Start.strftime("%d%m%Y")
-StartDate2 = Start.strftime("%Y%m%d")
 
-arcpy.env.overwriteOutput = True
+###############################################################################################################
+#                         USER-DEFINED VARIABLES - Set the values as required                                 # 
+###############################################################################################################
 
-print("Start time is " + StartTime + " on " + Start.strftime("%A %d %B %Y"))
+# processing mode
+mode = "JFMP"  # Options: "DAP", "JFMP", "NBFT" - Any for ad-hoc
 
-#     USER DEFINED VARIABLES - Set the values as required
-# vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
+# list of themes to process
+theme_list = ["forests", "biodiversity"] # "summary", "forests", "biodiversity", "heritage", "water"
 
+# output folder
+workpath = r"C:\data\dap_temp"  # root path of workspace for outputs and data - must have several GB free space
+
+# data locations
 CSDL = "D:\\Data\\gis_public\\CSDL"  # Path of the CSDL source folder
 CSDL2 = "D:\\Data\\gis_public\\CSDL FloraFauna2"  # Path of the CSDL-restricted source folders
 CSDL3 = "D:\\Data\\gis_public\\CSDL Culture"  # Path of the CSDL-restricted cultural source folders
-
 BLD = "O:\\regional_business.gdb"  # Path for business level data library
 REG = "D:\\Data\\gis_public\\gisdesk\\GISData"  # Regional replicated data source eg Pest Animals
-workpath = r"C:\Users\mw1m\OneDrive - Department of Energy, Environment and Climate Action\GIS\gigis Projects\DAP\Data"  # root path of workspace for outputs and data - must have several GB free space
+works_features = r"C:\Users\mw1m\OneDrive - Department of Energy, Environment and Climate Action\GIS\gigis Projects\DAP\Data\QA.gdb\works_shapefil_ExportFeature"  # r"C:\Data\GIS_Projects_Local\DAP\Data\QA.gdb\JFMP_TEST_Bio"
 
-# List of output tables to create in this run.
-# Options are; summary, forests, biodiversity, water, heritage  CASE SENSITIVE!!
-#   include a blank pair of double quotes "" at the end if only one item in the list, to make it behave as a list.
-themelist = "forests", "biodiversity" # "summary", "forests", "biodiversity", "heritage", "water"
-
-## *** It is recommended to process ONE DISTRICT at a time, ESPECIALLY IF RUNNING BIODIVERISTY IN THEMELIST for JFMP ***
-
-# set DAP source layer
-in_DAP = r"C:\Users\mw1m\OneDrive - Department of Energy, Environment and Climate Action\GIS\gigis Projects\DAP\Data\QA.gdb\works_shapefil_ExportFeature"  # r"C:\Data\GIS_Projects_Local\DAP\Data\QA.gdb\JFMP_TEST_Bio"
-#### set DAP/NBFT or JFMP mode below for checking against the Risk Register. General works should be run under DAP mode, planned burns to be run under JFMP.
-mode = "JFMP"  # use one of the following: "DAP", "JFMP", "NBFT" - Adhoc can have anything written here
-
-Makeshapefile = False  # set to True if works need to be exported and saved individually as shapefiles in another folder, these later get saved in an ECM folder for sharing
+# options
+output_shapefile = False  # set to True if works need to be exported and saved individually as shapefiles in another folder, these later get saved in an ECM folder for sharing
 shapefilepath = workpath[:-4] + "QB_Processing\\Shapefiles"  # folder location to save the shapefiles
 
-# -------------------------------------------------------------------------------------------------------------------
 
 ### For Risk Register:
-
 DAPriskreg = workpath + r"\RiskRegister.gdb\NBFTDAP_RiskRegister"  # use this for DAP or NBFT, full risk register with all EVCs
 ###LRLIriskreg = "C://Data//GIS_Projects_Local//DAP//Data//RiskRegister.gdb//LRLI_RiskRegister"  # filtered out values that won't be threatened under LRLI (additional EVCs removed)
 JFMPriskreg = workpath + r"\RiskRegister.gdb\JFMP_RiskRegister"  # use this for FOP/JFMP only - combined advice for both EC and AGG BRL
 
-# set .prj file locations (I've also included these in DAP_values_checking\\resources\\Coordinate Systems)
-srfilez = workpath[:-4] +  r"\Coordinate Systems\GDA 1994 MGA Zone 55.prj"  # Projected coordinate system GDA 1994 MGA Zone 55H (for anything east of Melbourne)
-srfileg = workpath[:-4] +  r"\Coordinate Systems\Geocentric Datum of Australia 1994.prj"  # Geographic coordinate system Geocentric Datum of Australia 1994 (GCS_GDA_1994)
-srfilev = workpath[:-4] +  r"\Coordinate Systems\GDA 1994 VICGRID94.prj"  # Projected coordinate system VicGrid94 (preferred for whole of Victoria)
 
-# ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+###############################################################################################################
+#                                SCRIPT VARIABLES - DO NOT CHANGE THESE!                                      # 
+###############################################################################################################
 
-# Other variables - DO NOT CHANGE
 outGDB = "DAP_Checking_outputs.gdb"  # Name of output GDB
-templateGDB = workpath + "\\DAP_table_templates.gdb"  # Name of table template GDB within workspace
-
-# ==================================================================================================================
-
-#     EXECUTABLE PART OF THE SCRIPT
-# ==================================================================================================================
-
-# set schema path Variables
-CSDLforest = CSDL + "\\FORESTS.GDB"
-CSDLffauna = CSDL + "\\FLORAFAUNA1.GDB"
-CSDLffth = CSDL2 + "\\FLORAFAUNA2.GDB"
-CSDLcland = CSDL + "\\CROWNLAND.GDB"
-CSDLvmprop = CSDL + "\\VMPROP.GDB"
-CSDLvmlite = CSDL + "\\VMLITE.GDB"
-# CSDLwater = CSDL + "\\WATER.GDB"
-CSDLvmhydro = CSDL + "\\VMHYDRO.gdb"
-CSDLcatch = CSDL + "\\CATCHMENTS.gdb"
-CSDLforestry = CSDL + "\\FORESTRY.GDB"
-CSDLmin = CSDL + "\\MINERALS.GDB"
-CSDLfire = CSDL + "\\FIRE.GDB"
-CSDLreftab = CSDL + "\\VMREFTAB.GDB"
-CSDLvmtenure = CSDL + "\\VMCLTENURE.GDB"
-CSDLvmplan = CSDL + "\\VMPLAN.GDB"
-CSDLculture = CSDL + "\\CULTURE.gdb"
-# CSDLculture2 = CSDL3 + "\\CULTURE2.gdb"
-CSDLculture2 = CSDL3 + "\\CULTURE.gdb"
-CSDLplan = CSDL + "\\PLANNING.gdb"
-CSDLfeat = CSDL + "\\VMFEAT.gdb"
-CSDLtrans = CSDL + "\\VMTRANS.gdb"
-
-# set input layer variables (usage dependant on theme list)
+templateGDB = os.path.join(workpath, "\\DAP_table_templates.gdb")  # Name of table template GDB within workspace
 
 # Summary table inputs
-# in_VIC = workpath + "\\Misc_data.gdb\\VICTORIA_POLY_DETAILED"
-in_VIC = CSDLfire + "\\LF_DISTRICT"  # TO REPLACE in_VIC if just wanting to focus on district
-in_FMZ = CSDLforest + "\\FMZ100"  # Forest Management Zones
-in_PARCEL = CSDLvmprop + "\\PARCEL_CROWN_APPROVED"  # Crown parcels from Vicmap
-in_PLM = CSDLcland + "\\PLM25"  # Public land status
-in_PLMOVRLAY = CSDLcland + "\\PLM25_OVERLAYS"  # Overlay data that replaces PLM100 layers (references areas, heritage rivers, natural catchments, wilderness zones, remote natural areas)
-in_FTYPE = CSDLforest + "\\FORTYPE500"  # Forest type
-in_PLAN = CSDLvmplan + "\\PLAN_ZONE"  # Planning scheme zones
-in_PLOLAY = CSDLvmplan + "\\PLAN_OVERLAY"  # Planning scheme overlays
-in_NT = REG + "\\RegionalData.gdb\\GUNAIKURNAI_DETERMINATION"  # GLaWAC Native Title Layer
+in_VIC = os.path.join(CSDL, "FIRE.GDB", "LF_DISTRICT")
+in_FMZ = os.path.join(CSDL, "FORESTS.GDB", "FMZ100")
+in_PARCEL = os.path.join(CSDL, "VMPROP.GDB", "PARCEL_CROWN_APPROVED")
+in_PLM = os.path.join(CSDL, "CROWNLAND.GDB", "PLM25")
+in_PLMOVRLAY = os.path.join(CSDL, "CROWNLAND.GDB", "PLM25_OVERLAYS")
+in_FTYPE = os.path.join(CSDL, "FORESTS.GDB", "FORTYPE500")
+in_PLAN = os.path.join(CSDL, "VMPLAN.GDB", "PLAN_ZONE")
+in_PLOLAY = os.path.join(CSDL, "VMPLAN.GDB", "PLAN_OVERLAY")
+in_NT = os.path.join(REG, "RegionalData.gdb", "GUNAIKURNAI_DETERMINATION")
 
-# Water table inputs
-# in_PWSC = CSDLwater + "\\PWSC100"                           # Proclaimed Water Supply Catchments
-in_HYDRO = CSDLvmhydro + "\\HY_WATERCOURSE"  # Vicmap Watercourse layer, to be used in place of PWSC100 to determine if the works are within waterways
-in_CMA = CSDLcatch + "\\CMA100"  # Catchment Management Authority (CMA) boundaries
+# Water inputs
+in_HYDRO = os.path.join(CSDL, "VMHYDRO.gdb", "HY_WATERCOURSE")
+in_CMA = os.path.join(CSDL, "CATCHMENTS.gdb", "CMA100")
 
-# Biodiversity table inputs
-in_RARETABLE = workpath + "\\Biodiversity\\VBA_EXTRACTS.gdb\\Victorian_FMP_And_CAMS"  # Table of rare plant species listed in Forest Management Plans, also has newly listed species not yet in Gippsland's Risk Register, based on new CAMS threat category
-in_SRO = REG + "\\RegionalData.gdb\\BLD_SpeciesRecoveryOverlay_20220410"  # Species recovery overlay (also available in regional BLD) - for JFMP and NBFT
-in_VBAFL25 = CSDLffauna + "\\VBA_FLORA25"  # Biodiversity flora25k
-in_VBAFLTHR = CSDLffth + "\\VBA_FLORA_THREATENED"  # Biodiversity threatened flora
-in_VBAFLRES = CSDLffth + "\\VBA_FLORA_RESTRICTED"  # Biodiversity restricted flora
-in_VBAFA25 = CSDLffauna + "\\VBA_FAUNA25"  # Biodiversity fauna25k
-in_VBAFATHR = CSDLffth + "\\VBA_FAUNA_THREATENED"  # Biodiversity threatened fauna
-in_VBAFARES = CSDLffth + "\\VBA_FAUNA_RESTRICTED"  # Biodiversity restricted fauna
-in_VBATaxaList = CSDLffauna + "\\VBA_TAXA_LIST"  # Table of VBA species to check against species information currency
-in_AQUACATCH = CSDLffauna + "\\ARI_AQUA_CATCH"  # Aquatic catchment areas for Galaxias, Euastacus and Engaeus
-in_LBP = CSDLffauna + "\\LBPAG_BUFF_CHRFA"  # Leadbeaters possum areas
-in_EVC = CSDLffauna + "\\NV2005_EVCBCS"  # EVCs
-# in_RFCLIP = workpath + "\\Misc_data.gdb\\RAINFOREST_CLIP"   # CH RFA and Murrungower areas - used to clip rainforest where better mapping is available (not needed with new RAINFOR data)
-in_RFCLIP = workpath + "\\Misc_data.gdb\\CH_RAINFOREST_CLIP"  # CH RFA area only - used to clip rainforest where better mapping is available
-# in_RFPOLY = CSDLffauna + "\\RAINFOR100"                     # OLD CSDL rainforest areas
-in_RFPOLY = CSDLforest + "\\RAINFOR"  # NEW CSDL rainforest areas
-in_RFPOLYCH = CSDLforest + "\\RAINFOR100_CH"  # Central Highlands update to rainforest areas
-# in_RFMURR = CSDLforest + "\\RAINFOR25_MURRUNGOWAR"          # Murrungowar update to rainforest areas (not needed with new RAINFOR data)
+# Biodiversity inputs
+in_RARETABLE = os.path.join(workpath, "Biodiversity", "VBA_EXTRACTS.gdb", "Victorian_FMP_And_CAMS")
+in_SRO = os.path.join(REG, "RegionalData.gdb", "BLD_SpeciesRecoveryOverlay_20220410")
+in_VBAFL25 = os.path.join(CSDL, "FLORAFAUNA1.GDB", "VBA_FLORA25")
+in_VBAFLTHR = os.path.join(CSDL2, "FLORAFAUNA2.GDB", "VBA_FLORA_THREATENED")
+in_VBAFLRES = os.path.join(CSDL2, "FLORAFAUNA2.GDB", "VBA_FLORA_RESTRICTED")
+in_VBAFA25 = os.path.join(CSDL, "FLORAFAUNA1.GDB", "VBA_FAUNA25")
+in_VBAFATHR = os.path.join(CSDL2, "FLORAFAUNA2.GDB", "VBA_FAUNA_THREATENED")
+in_VBAFARES = os.path.join(CSDL2, "FLORAFAUNA2.GDB", "VBA_FAUNA_RESTRICTED")
+in_VBATaxaList = os.path.join(CSDL, "FLORAFAUNA1.GDB", "VBA_TAXA_LIST")
+in_AQUACATCH = os.path.join(CSDL, "FLORAFAUNA1.GDB", "ARI_AQUA_CATCH")
+in_LBP = os.path.join(CSDL, "FLORAFAUNA1.GDB", "LBPAG_BUFF_CHRFA")
+in_EVC = os.path.join(CSDL, "FLORAFAUNA1.GDB", "NV2005_EVCBCS")
+in_RFCLIP = os.path.join(workpath, "Misc_data.gdb", "CH_RAINFOREST_CLIP")
+in_RFPOLY = os.path.join(CSDL, "FORESTS.GDB", "RAINFOR")
+in_RFPOLYCH = os.path.join(CSDL, "FORESTS.GDB", "RAINFOR100_CH")
 
-# Forest management themes
-in_HUTS = CSDLforest + "\\EG_ALPINE_HUT_SURVEY"  # Alpine huts - East Gippsland
-in_RECWEBS = CSDLforest + "\\RECWEB_SITE"  # Recreation site points
-in_RECWEBA = CSDLforest + "\\RECWEB_ASSET"  # Recreation Assets
-in_RECWEBH = CSDLforest + "\\RECWEB_HISTORIC_RELIC"  # Recreation Historic relic points
-in_RECWEBN = CSDLforest + "\\RECWEB_SIGN"  # Recreation sign points
-in_RECWEBC = CSDLforest + "\\RECWEB_CARPARK"  # Recreation carpark points
-in_MONITOR = REG + "\\RegionalData.gdb\\BLD_LAND_MANAGEMENT_SITES"  # more current version of Forest and Fire monitoring sites (uses replicated gis_desk)
-# in_MONITOR = CSDLforest + "\\LAND_MANAGEMENT_SITES"  #NEW Land_LANAGEMENT_SITES found in CSDL
-# in_MONITOR = BLD + "\\BLD_LAND_MANAGEMENT_SITES"                    # more current version of Forest and Fire monitoring sites (uses gigis)
-# in_RIDGE = CSDLforest + "\\EG_SENSITIVE_RIDGELINES"         # Landscape values - sesnitive ridge lines
-# in_VIEW = CSDLforest + "\\EG_SENSITIVE_VIEW_AREAS"          # Landscape values - sensitive view areas
-# in_RFSOS = CSDLffauna + "\\RFSOS100"                        # Rainforest sites of significance
-# in_OLDGROWTH = CSDLforest + "\\MOG"                     # Old growth forest areas
-in_GTREES = CSDLforest + "\\EG_GIANT_TREES"  # Giant trees register
-# in_PESTAN = REG + "\\Area_Gippsland\\PestPlantsAnimals_Egipps_2005-2014.gdb\\PestAnimals\\PestAnimalSites"          # Pest Animal point locations, only contains old wild dog locations, worth checking?
-# in_PESTPL = REG + "\\Area_Gippsland\\PestPlantsAnimals_Egipps_2005-2014.gdb\\PestPlants\\PestPlantsAreas"           # Pest plants poly data (OLD)\
-in_PESTPL = REG + "\\RestrictedData.gdb\\MAX_EIP_HRIP_Open_plm25_20230614"  # updated point weeds data from ag vic
-in_PLM = CSDLcland + "\\PLM25"  # Public land status
-in_TRP = CSDLforest + "\\TRP"  # Timber release Plan
-in_BURN = CSDLfire + "\\BURNPLAN25"  # Fire operations plan 2024/25
-in_MINSITE = CSDLmin + "\\MINSITE"  # Mining sites
-in_MIN = CSDLmin + "\\MIN"  # Mining leases
-in_APIARY = CSDLcland + "\\APIARY_BUFF"  # Apiary sites
-in_GLIC = CSDLvmtenure + "\\V_CL_TENURE_POLYGON_DC"  # Grazing licences - select tenure code 100-199
-# in_GLIC = r'G:\cbd\DATA3\Gis_Public\VSDL\VMCLTENURE.gdb\V_CL_TENURE_POLY'
-in_TCODE = CSDLreftab + "\\CL_TENURE_DESC"
-in_CHEM = workpath + "\\Misc_data.gdb\\BLD_CHEMICAL_CONTROL_AREAS"  # Chemical Control Areas (use this if no access to regional gdb)
-# in_CHEM = BLD + "\\BLD_CHEMICAL_CONTROL_AREAS"              # Chemical Control Areas (not much different from local copy)
-in_PCRISK = workpath + "\\Misc_data.gdb\\HIGH_PC_RISK_0610_POLY"  # phytophtora risk poly data (use this if no access to regional gdb) - has a query to only show high risk
-# in_PCRISK = BLD + "\\BLD_PC_RISK_0610_POLY"                 # phytophthora risk poly data (not much different from local copy)
+# Forest management inputs
+in_HUTS = os.path.join(CSDL, "FORESTS.GDB", "EG_ALPINE_HUT_SURVEY")
+in_RECWEBS = os.path.join(CSDL, "FORESTS.GDB", "RECWEB_SITE")
+in_RECWEBA = os.path.join(CSDL, "FORESTS.GDB", "RECWEB_ASSET")
+in_RECWEBH = os.path.join(CSDL, "FORESTS.GDB", "RECWEB_HISTORIC_RELIC")
+in_RECWEBN = os.path.join(CSDL, "FORESTS.GDB", "RECWEB_SIGN")
+in_RECWEBC = os.path.join(CSDL, "FORESTS.GDB", "RECWEB_CARPARK")
+in_MONITOR = os.path.join(REG, "RegionalData.gdb", "BLD_LAND_MANAGEMENT_SITES")
+in_GTREES = os.path.join(CSDL, "FORESTS.GDB", "EG_GIANT_TREES")
+in_PESTPL = os.path.join(REG, "RestrictedData.gdb", "MAX_EIP_HRIP_Open_plm25_20230614")
+in_TRP = os.path.join(CSDL, "FORESTS.GDB", "TRP")
+in_BURN = os.path.join(CSDL, "FIRE.GDB", "BURNPLAN25")
+in_MINSITE = os.path.join(CSDL, "MINERALS.GDB", "MINSITE")
+in_MIN = os.path.join(CSDL, "MINERALS.GDB", "MIN")
+in_APIARY = os.path.join(CSDL, "CROWNLAND.GDB", "APIARY_BUFF")
+in_GLIC = os.path.join(CSDL, "VMCLTENURE.GDB", "V_CL_TENURE_POLYGON_DC")
+in_TCODE = os.path.join(CSDL, "VMREFTAB.GDB", "CL_TENURE_DESC")
+in_CHEM = os.path.join(workpath, "Misc_data.gdb", "BLD_CHEMICAL_CONTROL_AREAS")
+in_PCRISK = os.path.join(workpath, "Misc_data.gdb", "HIGH_PC_RISK_0610_POLY")
 
-# Utilities
-in_POWRLINE = CSDLfeat + "\\POWER_LINE"
-in_PIPELINE = CSDLfeat + "\\FOI_LINE"
-in_RAIL = CSDLtrans + "\\TR_RAIL"
+# Utilities inputs
+in_POWRLINE = os.path.join(CSDL, "VMFEAT.gdb", "POWER_LINE")
+in_PIPELINE = os.path.join(CSDL, "VMFEAT.gdb", "FOI_LINE")
+in_RAIL = os.path.join(CSDL, "VMTRANS.gdb", "TR_RAIL")
 
-# Historic sites themes
-in_HIST100 = CSDLffauna + "\\HIST100_POINT"  # Historic sites
-# in_HIST25 = REG + "\\Area_Gippsland\\ValuesChecking_Gippsland_2013.gdb\\Hist25" #Not needed, HIST100 is up to date with all the same points
-in_VHI = CSDLplan + "\\HERITAGE_INVENTORY"
-in_VHR = CSDLplan + "\\HERITAGE_REGISTER"
+# Historic sites inputs
+in_HIST100 = os.path.join(CSDL, "FLORAFAUNA1.GDB", "HIST100_POINT")
+in_VHI = os.path.join(CSDL, "PLANNING.gdb", "HERITAGE_INVENTORY")
+in_VHR = os.path.join(CSDL, "PLANNING.gdb", "HERITAGE_REGISTER")
 
-# Cultural heritage sites theme
-in_ACHRISS = CSDLculture2 + "\\ACHP_FIRESENS"  # Most updated site data
-# in_ACHRISP = REG + "\\RegionalData.gdb\\CH_PRELIMINARY_REPORTS_ALL" #temporary updated version while Anthony Cheesman's script is not presently working
-in_ACHRISP = r"N:\projects\prelim_ch_change_detection\data\data.gdb\CH_PRELIMINARY_REPORTS_ALL"  # gigis location of live updated preliminary reports (Anthony Cheesman's edited script)
-in_RAP = CSDLculture + "\\RAP"
-in_SENS = CSDLculture + "\\SENSITIVITY_PUBLIC"
-# in_JOINTMGMT = REG + r"\RegionalData.gdb\GLaWACJointManagedParks_Dissolved" #static copy of Joint Managed Parks in GLaWAC RAP
-in_JOINTMGMT = CSDLcland + r"\PLM25_OVERLAYS_TO"  # live statewide RSA areas for all RAPs
-in_PV = CSDLfire + r"\PV_DISTRICTS"
+# Cultural heritage inputs
+in_ACHRISS = os.path.join(CSDL3, "CULTURE.gdb", "ACHP_FIRESENS")
+in_ACHRISP = r"N:\projects\prelim_ch_change_detection\data\data.gdb\CH_PRELIMINARY_REPORTS_ALL"
+in_RAP = os.path.join(CSDL, "CULTURE.gdb", "RAP")
+in_SENS = os.path.join(CSDL, "CULTURE.gdb", "SENSITIVITY_PUBLIC")
+in_JOINTMGMT = os.path.join(CSDL, "CROWNLAND.GDB", "PLM25_OVERLAYS_TO")
+in_PV = os.path.join(CSDL, "FIRE.GDB", "PV_DISTRICTS")
 
-# set output table variables
+
+# Output table variables
 sumtab = "DAP_Summary"
 biotab = "DAP_Biodiv_summary_rawdata2"
 wattab = "DAP_Water_summary"
@@ -324,243 +258,289 @@ worksfc = "works_shapefile_Template"  # older template that still has all origin
 worksfc2 = "Works_Shapefile_Template2"  # For JFMP/NBFT
 worksdetailog = "DAP_WorksDetail_QB"  # original worksdetail fields in tabular form
 
-# create a local working copy of the DAP layer and tables
-env.workspace = workpath
-print("Creating a copy of the DAP from original supplied")
+# spatial reference systems
+sr_gda_z55 = arcpy.SpatialReference(28355)  # GDA94 MGA Zone 55
+sr_vicgrid = arcpy.SpatialReference(3111) # VICGRID94
 
+
+###############################################################################################################
+#                                     EXECUTABLE PART OF THE SCRIPT                                           # 
+###############################################################################################################
+
+# set up geoprocessing environment
+arcpy.env.overwriteOutput = True
+env.workspace = os.path.join(workpath, outGDB)
+arcpy.env.outputCoordinateSystem = sr_gda_z55 # GDA94 MGA Zone 55
+arcpy.env.cartographicCoordinateSystem = sr_gda_z55 # GDA94 MGA Zone 55
+arcpy.env.overwriteOutput = True
+arcpy.env.parallelProcessingFactor = "75%"
+arcpy.SetLogHistory(False)
+
+
+# populate time and date variables
+now = datetime.datetime.now()
+start_time = now.strftime("%H:%M:%S")
+start_date = now.strftime("%d%m%Y")
+
+print("Running the Values Checking tool")
+print(f"Start time is {start_time} on {now.strftime('%A %d %B %Y')}")
+
+# make file gdb for storage
 if arcpy.Exists(outGDB):
-    print("Checking for old version of output datasets")
-    env.workspace = outGDB
+    print(f"Deleting {outGDB}")
+    arcpy.management.Delete(outGDB)
 
-    # removing all previous versions of output featureclasses and tables in output GBD
+print("Creating a new output GDB")
+arcpy.management.CreateFileGDB(workpath, outGDB)
 
-    featureclasses = arcpy.ListFeatureClasses()
-    for fc in (fc for fc in featureclasses):
-        print("  ...deleting " + fc)
-        arcpy.management.Delete(fc)
+# create a local copy of the works and values layers
+print("Creating a copy of the works layer from original supplied")
+arcpy.management.CopyFeatures(works_features, "works_features", sr_gda_z55, f"{reference_field} <> ''", )
 
-    tables = arcpy.ListTables()
-    for fc in (fc for fc in tables):
-        print("  ...deleting " + fc)
-        arcpy.management.Delete(fc)
+# add geometry details to works
+print("\nAdding geometry data")
 
-    env.workspace = workpath
+# add geometry fields if they don't exist
+field_list = arcpy.ListFields("works_features")
+for new_field in ["Easting", "Northing", "Length_Km", "Area_Ha"]:
+    if new_field not in [field_list]:
+        arcpy.management.AddField("works_features", f"new_field", "DOUBLE", "7")
 
-
-else:
-    print("Creating a new output GDB")
-    arcpy.management.CreateFileGDB(workpath, outGDB)
-
-# Set the default coordinate system for all outputs (default set to VICGRID 94)
-arcpy.env.outputCoordinateSystem = srfilev
-
-# Make a copy of DAP layer - selecting records that have a reference number.  Need unique ID later on.
-arcpy.conversion.FeatureClassToFeatureClass(in_DAP, workpath + "\\" + outGDB, "DAP_local",
-                                            " \"DAP_REF_NO\" <> '' ")  # DAP_REF_NO
-# Calculate geometry details for DAP
-env.workspace = outGDB
-
-edit = arcpy.da.Editor(workpath + "\\" + outGDB)  ############ test for items still stuck in edit mode?
-edit.startEditing(False, False)
-edit.stopEditing(True)  ##########
-
-print(" ")
-print("Adding geometry data")
-
-arcpy.management.Project("DAP_local", "DAP_z55", srfilez)  # project instead to GDA MGA z55? instead of Vicgrid srfileg?
-DAPflist = arcpy.ListFields("DAP_local")
-try:
-    arcpy.management.AddField("DAP_z55", "Easting", "DOUBLE", "7")  # if it doesn't already exist
-    arcpy.management.AddField("DAP_z55", "Northing", "DOUBLE", "7")  # if it doesn't already exist
-    del DAPflist
-except:
-    del DAPflist
-
-arcpy.management.AddField("DAP_z55", "LENGTH_KM", "DOUBLE")
-
-with arcpy.da.UpdateCursor("DAP_z55", ["Easting", "SHAPE@X", "Northing", "SHAPE@Y", "LENGTH_KM", "SHAPE@LENGTH"],
-                           spatial_reference=srfilez) as cursor:
-    for row in cursor:  # row[0] is easting, [1] is SHAPE@X, [2] is northing, [3] is SHAPE@Y, [4]  is length_km, and [5] is SHAPE@LENGTH
-        row[0] = int(row[1])
-        row[2] = int(row[3])
-        row[4] = (row[
-                      5] / 1000) * 0.498  # to convert to kilometres and get approximate centreline length for roading lines
-        cursor.updateRow(row)
-
-with arcpy.da.UpdateCursor("DAP_z55", ["AREA_HA", "SHAPE@"], spatial_reference=srfilev) as cursor:
+with arcpy.da.UpdateCursor("works_features", ["SHAPE@", "Easting", "Northing", "Length_Km", "Area_Ha"]) as cursor:
     for row in cursor:
-        row[0] = row[1].getArea('GEODESIC', 'HECTARES')
+        (shape, easting, northing, len_km, area_ha) = row
+        easting = int(shape.x)
+        northing = int(shape.y)
+        len_km = (shape.length / 1000) * 0.498  # approximate centreline length for roading lines
+        area_ha = shape.area / 10000
         cursor.updateRow(row)
 
-arcpy.management.Delete("DAP_local")
-arcpy.management.Rename("DAP_z55", "works_shapefile")
 
 # Make a blank, editable copy of tables from templates
+# use different bio+forest??? and worksdetail output if JFMP or NBFT are being run (slightly different fields)
+opt_works = worksfc2 if 'JFMP' in mode or 'NBFT' in mode else opt_works = worksfc
+for tab in [sumtab, biotab, wattab, hertab1, hertab2, fortab, hertabQB, opt_works, biofmQB]:
+    arcpy.management.Copy(os.path.join(templateGDB, tab), tab)
 
-arcpy.management.Copy(templateGDB + "\\" + sumtab, sumtab)
-arcpy.management.Copy(templateGDB + "\\" + biotab, biotab)
-arcpy.management.Copy(templateGDB + "\\" + wattab, wattab)
-# arcpy.management.Copy(templateGDB + "\\" + hertab, hertab)
-arcpy.management.Copy(templateGDB + "\\" + hertab1, hertab1)
-arcpy.management.Copy(templateGDB + "\\" + hertab2, hertab2)
-arcpy.management.Copy(templateGDB + "\\" + fortab, fortab)
-arcpy.management.Copy(templateGDB + "\\" + hertabQB, hertabQB)
 
-if 'JFMP' in mode or 'NBFT' in mode:  # use different bio+forest and worksdetail output if JFMP or NBFT are being run (slightly different fields)
-    arcpy.management.Copy(templateGDB + "\\" + worksfc2, worksfc)
-else:
-    # arcpy.management.Copy(templateGDB + "\\" + biofmQB, biofmQB)
-    arcpy.management.Copy(templateGDB + "\\" + worksfc, worksfc)
+def add_and_fill_text_field(input, field_name, type, str):
+    """ Re-usable function to add and populate a field """
+    arcpy.management.AddField(f"{input}", "f{field_name}", "TEXT", "", "", 50)
+    arcpy.management.CalculateField(f"{input}", "f{field_name}", f"{str}", "PYTHON3")
 
-arcpy.management.Copy(templateGDB + "\\" + biofmQB2, biofmQB)
+def add_xy(input):
+    """ Re-usable function to add and populate X and Y geometry fields """
+    
+    try:
+        # add coordinates fields
+        arcpy.management.AddField("{input}", "X", "DOUBLE", "", "0", "10")
+        arcpy.management.AddField("{input}", "Y", "DOUBLE", "", "0", "10")
 
-# Set a cursor to build a list of targetted rare species from in_RARETABLE to use in selection loops
-# This only needs to be done once, hence it's here, not in the recursive part of the script.
-rarelist = ""
+        # populate coordinates from SHAPE@
+        with arcpy.da.UpdateCursor("temppestv", ['SHAPE@', "X", "Y"]) as cursor: 
+            
+            # alias fields for sanity
+            (shape, easting, northing) = row
+            
+            # step through rows and populate X and Y
+            for row in cursor:
+                easting = int(shape.x)
+                northing = int(shape.y)
+                cursor.updateRow(row)
+    
+    except Exception as e:
+        print(f"Error executing add_xy: {str(e)}") 
+
+
+###########
+###########     PASS 1 - UP TO HERE
+###########
+
+# Generate  a list of targetted rare species from in_RARETABLE to use in selection loops
 with arcpy.da.SearchCursor(in_RARETABLE, "TAXON_CODE", "TAXON_CODE > 0") as cursor:
-    for row in cursor:
-        rarelist = rarelist + str(row[0]) + ","
-
-rarelist = rarelist[0:-1]
-rarelistquery = f"(STARTDATE > date '1980-01-01 00:00:00') AND MAX_ACC_KM <= 0.5 AND TAXON_ID in ({rarelist})" #this query will be used later in biodiversity querying for flora records
-
+    rarelist = ",".join(str(row[0]) for row in cursor)
+rarelist_query = f"(STARTDATE > date '1980-01-01 00:00:00') AND MAX_ACC_KM <= 0.5 AND TAXON_ID in ({rarelist})" #this query will be used later in biodiversity querying for flora records
 
 # setting up one-off features to use for finding values, depending on theme - only LRLI values run here because it applies universally to all activities
 # only needs to be done once, which is why it's here and not inside the recursive part of the script
-if "forests" in themelist:
+if "forests" in theme_list:
+
+    #### PESTS
     print("   Creating one-off Pests data layer...")
-    # arcpy.analysis.Buffer(in_PESTAN, "xtemppestan", "10 meter", "FULL", "ROUND", "LIST", ["SPECIES"])
-    # arcpy.management.Dissolve(in_PESTPL, "xtemppestpl", "INF_SP_1", "", "SINGLE_PART")
-    #     arcpy.management.AlterField("xtemppestan", "SPECIES", "PEST_SPEC", "PEST_SPEC")
-    # arcpy.management.Merge(["xtemppestpl", "xtemppestan"], "temppestv")
-    # for fc in "xtemppestpl", "xtemppestan":
-    # arcpy.management.Delete(fc)
+
+    # create buffered version of values layer
     arcpy.analysis.Buffer(in_PESTPL, "temppestv", "10 meter", "FULL", "ROUND", "LIST", ["Species", "Ranking"])
 
-    # add and calculate new fields here so it's only done once
-    arcpy.management.AddField("temppestv", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("temppestv", "Y", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("temppestv", "Value_Type", "TEXT", "", "", 50)
+    # add coordinates
+    add_xy("temppesttv")
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("temppestv", "Value_Type", "PEST_PLANT")
+
+    # combine all pest species into single Value field
     arcpy.management.AddField("temppestv", "Value", "TEXT", "", "", 250)
-    # combine all pest species into single Value field, and calculate Value type
-    with arcpy.da.UpdateCursor("temppestv", ["Species", "Ranking", "Value",
-                                             "Value_Type"]) as cursor:  # 0 is PEST_SPEC, 1 is INF_SP_1, 2 is Value and 3 is Value_Type
+
+    with arcpy.da.UpdateCursor("temppestv", ["Species", "Ranking", "Value"]) as cursor:  
+
+        # alias fields for sanity
+        (species, ranking, value) = row
+
+        # step through rows and update
         for row in cursor:
-            row[2] = (row[0] + ", " + row[1] + " Weed")
-            row[3] = "PEST_PLANT"
-            cursor.updateRow(row)
-    with arcpy.da.UpdateCursor("temppestv", ['SHAPE@X', 'SHAPE@Y', "X", "Y"],
-                               spatial_reference=srfilez) as cursor:  # add xy coordinates to points
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
+            value = f"{species}, {ranking} Weed"
             cursor.updateRow(row)
 
+    #### MONITORING SITES
     print("   Creating one-off forest and fire monitoring site data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_MONITOR, workpath + "\\" + outGDB, "monforestfire",
-                                                "(SITE_CATEGORY IN('FOREST','FIRE')) AND TIMEFRAME <> 'NOT ACTIVE'")
-    arcpy.management.AddField("monforestfire", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.AlterField("monforestfire", "SITE_ID", "Value")
-    arcpy.management.AlterField("monforestfire", "SITE_NAME", "Value_Description")
-    arcpy.management.AlterField("monforestfire", "LMS_ID", "Value_ID")
-    arcpy.management.AddField("monforestfire", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("monforestfire", "Y", "DOUBLE", "", "0", "10")
-    arcpy.management.CalculateField("monforestfire", "Value_Type", '"Monitoring Site"', "PYTHON3")
-    arcpy.management.CalculateField("monforestfire", "Value_Description",
-                                    "!Value_Description! ' || ' !SITE_PRESCRIPTIONS! ' || ' !CONTACT!", "PYTHON3")
-    with arcpy.da.UpdateCursor("monforestfire", ['SHAPE@X', 'SHAPE@Y', "X", "Y"],
-                               spatial_reference=srfilez) as cursor:  # add XY coordinates here
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
-            cursor.updateRow(row)
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_MONITOR)
+    field_map.findFieldMapIndex("SITE_ID").outputField.name = "Value"
+    field_map.findFieldMapIndex("SITE_NAME").outputField.name = "Value_Description"
+    field_map.findFieldMapIndex("LMS_ID").outputField.name = "Value_ID"
+
+    # create local values layer with selection
+    arcpy.conversion.FeatureClassToFeatureClass(in_MONITOR, os.path.join(workpath, outGDB), "monforestfire",
+                                                "(SITE_CATEGORY IN('FOREST','FIRE')) AND TIMEFRAME <> 'NOT ACTIVE'",
+                                                field_mapping=field_map)
+    
+    # add coordinates
+    add_xy("temppesttv")
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("monforestfire", "Value_Type", "Monitoring Site")
+
+
+    #### PHYTOPTHORA
     print("   Creating one-off High risk Phytopthora sites data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_PCRISK, workpath + "\\" + outGDB, "pchighriskx",
-                                                "CLASS = 'High'")  # only High risk is detected and passed through
-    arcpy.management.AlterField("pchighriskx", "CLASS", "Value")
-    arcpy.management.AddField("pchighriskx", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.CalculateField("pchighriskx", "Value_Type", '"Phytophthora Risk"', "PYTHON3")
-    arcpy.management.Dissolve("pchighriskx", "pchighrisk", ["Value", "Value_Type"], None, "MULTI_PART",
-                              "DISSOLVE_LINES")  # dissolve to improve processing speed?
-    arcpy.management.Delete("pchighriskx")
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_PCRISK)
+    field_map.findFieldMapIndex("CLASS").outputField.name = "Value"
+
+    # create local dissolved values layer with selection
+    arcpy.conversion.FeatureClassToFeatureClass(in_PCRISK, "in_memory", "temp_pc", "CLASS = 'High'", field_mapping=field_map)
+    arcpy.management.Dissolve("in_memory\\temp_pc", os.path.join(workpath, outGDB, "pchighrisk"), 
+                              ["Value"], None, "MULTI_PART", "DISSOLVE_LINES")
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("monforestfire", "Value_Type", "Phytophthora Risk")
+    
+
+    #### CHEMICAL CONTROL AREAS
     print("   Creating temporary Chemical Control Area data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_CHEM, workpath + "//" + outGDB, "acca")
-    arcpy.management.AlterField("acca", "ACCA_NAME", "Value")
-    arcpy.management.AddField("acca", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.CalculateField("acca", "Value_Type", '"Agricultural Chemical Control Area"', "PYTHON3")
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_PCRISK)
+    field_map.findFieldMapIndex("ACCA_NAME").outputField.name = "Value"
+
+    # create local values layer
+    arcpy.conversion.FeatureClassToFeatureClass(in_CHEM, os.path.join(workpath, outGDB), "acca", field_mapping=field_map)
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("acca", "Value_Type", "Agricultural Chemical Control Area")
+
+
+    #### HISTORIC HERITAGE
     print("   Creating one-off statewide Historic Heritage data...")
-    arcpy.analysis.Buffer(in_HIST100, "HIST100_BUFF", "250 meter", "FULL", "ROUND", "NONE")
-    arcpy.management.AlterField("HIST100_BUFF", "NAME", "Value", "Value")
-    arcpy.management.CalculateField("HIST100_BUFF", "Value", '" ".join(!Value!.split())',
-                                    "PYTHON3")  # to fix names with rogue newlines
-    arcpy.management.AddField("HIST100_BUFF", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.AddField("HIST100_BUFF", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("HIST100_BUFF", "Y", "DOUBLE", "", "0", "10")
 
-    arcpy.conversion.FeatureClassToFeatureClass(in_VHI, workpath + "\\" + outGDB, "VHI")
-    arcpy.management.AddField("VHI", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.AlterField("VHI", "VHI_NUM", "Value")
-    arcpy.management.AlterField("VHI", "SITE_NAME", "Value_Description")
-    arcpy.management.AlterField("VHI", "HERMES_NUM", "Value_ID")
-    arcpy.management.AddField("VHI", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("VHI", "Y", "DOUBLE", "", "0", "10")
+    # field mapping for consistent value identifiers and description
+    vhi_field_map = arcpy.FieldMappings()
+    vhi_field_map.addTable(in_VHI)
+    vhi_field_map.findFieldMapIndex("VHI_NUM").outputField.name = "Value"
+    vhi_field_map.findFieldMapIndex("SITE_NAME").outputField.name = "Value_Description" 
+    vhi_field_map.findFieldMapIndex("HERMES_NUM").outputField.name = "Value_ID"
 
-    arcpy.conversion.FeatureClassToFeatureClass(in_VHR, workpath + "\\" + outGDB, "VHR")
-    arcpy.management.AddField("VHR", "Value_Type", "TEXT", "", "", 50)
-    arcpy.management.AlterField("VHR", "VHR_NUM", "Value")
-    arcpy.management.AlterField("VHR", "SITE_NAME", "Value_Description")
-    arcpy.management.AlterField("VHR", "HERMES_NUM", "Value_ID")
-    arcpy.management.AddField("VHR", "X", "DOUBLE", "", "0", "10")
-    arcpy.management.AddField("VHR", "Y", "DOUBLE", "", "0", "10")
+    vhr_field_map = arcpy.FieldMappings()
+    vhr_field_map.addTable(in_VHR)
+    vhr_field_map.findFieldMapIndex("VHR_NUM").outputField.name = "Value"
+    vhr_field_map.findFieldMapIndex("SITE_NAME").outputField.name = "Value_Description"
+    vhr_field_map.findFieldMapIndex("HERMES_NUM").outputField.name = "Value_ID"
 
+    hist_field_map = arcpy.FieldMappings()
+    hist_field_map.addTable(in_HIST100)
+    hist_field_map.findFieldMapIndex("NAME").outputField.name = "Value"
+
+    # create buffered and vanilla versions of values layers
+    arcpy.analysis.Buffer(in_HIST100, "HIST100_BUFF", "250 meter", "FULL", "ROUND", "NONE", field_mapping=hist_field_map)
+    arcpy.conversion.FeatureClassToFeatureClass(in_VHI, os.path.join(workpath, outGDB), "VHI", field_mapping=vhi_field_map)
+    arcpy.conversion.FeatureClassToFeatureClass(in_VHR, os.path.join(workpath, outGDB), "VHR", field_mapping=vhr_field_map)
+
+    # clean rogue newlines from hist100
+    arcpy.management.CalculateField("HIST100_BUFF", "Value", '" ".join(!Value!.split())',"PYTHON3")  # to fix names with rogue newlines
+
+    # merge layers
     arcpy.management.Merge(["HIST100_BUFF", "VHI", "VHR"], "HistHeritage")
+    add_and_fill_text_field("HistHeritage", "Value_Type", "Historic Heritage Site")
+    
+    # add x and y coordinates
+    add_xy("HistHeritage")
 
-    arcpy.management.CalculateField("HistHeritage", "Value_Type", '"Historic Heritage Site"', "PYTHON3")
-    arcpy.management.CalculateField("HistHeritage", "Value", "!Value!.strip()",
-                                    "PYTHON3")  # to remove newline and white space errors from data (HIST100_Point has this issue...)
-    with arcpy.da.UpdateCursor("HistHeritage", ['SHAPE@X', 'SHAPE@Y', "X", "Y"], spatial_reference=srfilez) as cursor:
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
-            cursor.updateRow(row)
-
-    for fc in "HIST25_BUFF", "HIST100_BUFF", "VHI", "VHR":
+    # delete temporary feature classes
+    for fc in ["HIST100_BUFF", "VHI", "VHR"]:
         arcpy.management.Delete(fc)
 
+    #### MINING SITE
     print("   Creating one-off Mining site data...")
-    arcpy.analysis.Buffer(in_MINSITE, "buffmsit", "20 meter", "FULL", "ROUND",
-                          "NONE")  # buffer needs to occur here so values merge can work towards the end of the Forests spatial check - ensure everything is a polygon
-    arcpy.management.AlterField("buffmsit", "MINE_NAME", "Value", "Value")
-    arcpy.management.AlterField("buffmsit", "EASTING", "X", "X")
-    arcpy.management.AlterField("buffmsit", "NORTHING", "Y", "Y")
-    arcpy.management.AlterField("buffmsit", "SITEID", "Value_ID")
-    arcpy.management.AddField("buffmsit", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("buffmsit", "Value_Type", '"Mining Site"', "PYTHON3")
-    with arcpy.da.UpdateCursor("buffmsit", ['SHAPE@X', 'SHAPE@Y', "X", "Y"], spatial_reference=srfilez) as cursor:
-        for row in cursor:
-            row[2] = int(row[0])
-            row[3] = int(row[1])
-            cursor.updateRow(row)
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_PCRISK)
+    field_map.findFieldMapIndex("MINE_NAME").outputField.name = "Value"
+    field_map.findFieldMapIndex("EASTING").outputField.name = "X"
+    field_map.findFieldMapIndex("NORTHING").outputField.name = "Y"
+    field_map.findFieldMapIndex("SITEID").outputField.name = "Value_ID"
+
+    # create buffered version of values layer
+    arcpy.analysis.Buffer(in_MINSITE, "buffmsit", "20 meter", "FULL", "ROUND", "NONE", field_mapping=field_map)
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("buffmsit", "Value_Type", "Mining Site")
+
+
+    #### REGIONAL JFMP DATA
     print("   Creating one-off regional JFMP data...")
-    arcpy.conversion.FeatureClassToFeatureClass(in_BURN, workpath + "//" + outGDB, "FOP_Gipps", "REGION = 'Gippsland'")
-    arcpy.management.AddField("FOP_Gipps", "Value", "TEXT", 50)
-    arcpy.management.CalculateField("FOP_Gipps", "Value", "!TREAT_NO!", "PYTHON3")
-    arcpy.management.AddField("FOP_Gipps", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("FOP_Gipps", "Value_Type", '"Joint Fuel Management Plan"', "PYTHON3")
-    arcpy.management.AddField("FOP_Gipps", "Value_Description", "TEXT", 255)
-    arcpy.management.CalculateField("FOP_Gipps", "Value_Description", "!TREAT_NAME!", "PYTHON3")
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_BURN)
+    field_map.findFieldMapIndex("TREAT_NO").outputField.name = "Value"
+    field_map.findFieldMapIndex("TREAT_NAME").outputField.name = "Value_Description"
+
+    # create local values layer
+    arcpy.conversion.FeatureClassToFeatureClass(in_BURN, os.path.join(workpath, outGDB), "FOP_Gipps", "REGION = 'Gippsland'",
+                                                field_mapping=field_map)
+    
+    # add and populate Value_Type field
+    add_and_fill_text_field("FOP_Gipps", "Value_Type", "Joint Fuel Management Plan Site")
+
+
+    #### TRP DATA
     print("   Creating one-off TRP data...")
-    arcpy.management.Copy(in_TRP, "TRP")
-    arcpy.management.AlterField("TRP", "COUPE", "Value", "Value")
-    arcpy.management.AddField("TRP", "Value_Type", "TEXT", 50)
-    arcpy.management.CalculateField("TRP", "Value_Type", '"TRP Coupe"', "PYTHON3")
 
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_TRP)
+    field_map.findFieldMapIndex("COUPE").outputField.name = "Value"
+
+    # create local values layer
+    arcpy.conversion.FeatureClassToFeatureClass(in_TRP, os.path.join(workpath, outGDB), field_mapping=field_map)
+
+    # add and populate Value_Type field
+    add_and_fill_text_field("TRP", "Value_Type", "TRP Coupe")
+
+    #### POWERLINE DATA
     print("   Creating one-off Utilities data...")
+
+    # field mapping for consistent value identifiers and description
+    field_map = arcpy.FieldMappings()
+    field_map.addTable(in_POWRLINE)
+    field_map.findFieldMapIndex("FEATURE_TYPE").outputField.name = "Value"
+    field_map.findFieldMapIndex("FEATURE_TYPE").outputField.name = "Value"
+
     arcpy.management.Copy(in_POWRLINE, "POWRLINE")
     arcpy.management.AlterField("POWRLINE", "FEATURE_TYPE", "Value", "Value")
     arcpy.management.AddField("POWRLINE", "Value_Description", "TEXT", 255)
@@ -611,7 +591,7 @@ if "forests" in themelist:
             row[3] = int(row[1])
             cursor.updateRow(row)
 
-if "biodiversity" in themelist:
+if "biodiversity" in theme_list:
 
     print("   Setting up VBA template...")
     arcpy.management.Copy(templateGDB + "\\VBA_template_z55_V5", "VBA_outputs")
@@ -644,16 +624,17 @@ if "biodiversity" in themelist:
 
 print("")
 
-rf = "DAP_REF_NO"  # set selection field name for ref number #DAP_REF_NO
-df = "DISTRICT"  # set selection field name for district
-risk = "RISK_LVL"  # set selection field name for Risk (distinguishes between DAP or DMP/LRLI)
-# exp = '"' + df + '" = ' + "'" + str(dist) + "'"
+# field references
+reference_field = "DAP_REF_NO"  # set selection field name for ref number #DAP_REF_NO
+district_field = "DISTRICT"  # set selection field name for district
+risk_field = "RISK_LVL"  # set selection field name for Risk (distinguishes between DAP or DMP/LRLI)
 DAPfields = ["DAP_REF_NO", "DAP_NAME", "SCHEDULE", "RISK_LVL", "DESCRIPTION", "AREA_HA", "LENGTH_KM"]
 
-with arcpy.da.SearchCursor(in_DAP, df) as cur:
-    for row in cur:
-        dist = row[0]
-print("Processing records for " + str(dist))
+# determine district name from first polygon in works shapefile or feature class
+with arcpy.da.SearchCursor(works_features, district_field) as cursor:
+    district_name = next(cursor)[0]
+
+print("Processing records for {district_name}")
 
 ## Create a background poly layer for state of Victoria or District. This is used on layers with non-contiguous features to fix an issue with intersect
 ##arcpy.conversion.FeatureClassToFeatureClass(in_VIC, workpath + "\\" + outGDB, "tempvic", "\"STATE\" = 'VIC' AND \"FEATURE_TYPE_CODE\" = 'mainland'" )
@@ -665,7 +646,7 @@ arcpy.management.Delete("tempvic")
 arcpy.management.Rename("tempvic_buff", "tempvic")
 
 RiskValues = set()
-with arcpy.da.SearchCursor(in_DAP, risk) as cur:
+with arcpy.da.SearchCursor(works_features, risk_field) as cur:
     for row in cur:
         if row[0] not in RiskValues:
             RiskValues.add(row[0])
@@ -675,8 +656,8 @@ for RiskLevel in RiskValues:
     # Create a dataset for a single record from local DAP - to be used in overlay process
     print("")
 
-    arcpy.conversion.FeatureClassToFeatureClass("works_shapefile", workpath + "\\" + outGDB, "DAP_temp",
-                                                '"' + risk + '" = ' + "'" + RiskLevel + "'")
+    arcpy.conversion.FeatureClassToFeatureClass("works_features", workpath + "\\" + outGDB, "DAP_temp",
+                                                '"' + risk_field + '" = ' + "'" + RiskLevel + "'")
     numberoffeatures = arcpy.management.GetCount("DAP_temp")
     arcpy.management.AddField("DAP_temp", "BUFFER_TYPE", "TEXT", 100)
 
@@ -739,7 +720,7 @@ for RiskLevel in RiskValues:
                                    "Easting", "Northing", "YEAR_WORKS", "AREA_HA", "LENGTH_KM", "BUFFER_TYPE"])
 
     # Overlay DAP shape with input datasets...
-    for theme in themelist:
+    for theme in theme_list:
 
         # --------------------------------------------------------------------
         # SUMMARY   -> intersecting all relevant input layers for summary theme
@@ -919,11 +900,11 @@ for RiskLevel in RiskValues:
                 ftype = "tempftype"
                 nt = "tempnt"
 
-                IDs = [row[0] for row in arcpy.da.SearchCursor("DAP_buff1", rf, "RISK_LVL <> 'LRLI'")]
+                IDs = [row[0] for row in arcpy.da.SearchCursor("DAP_buff1", reference_field, "RISK_LVL <> 'LRLI'")]
                 UniqueID = set(IDs)
 
                 for ID in UniqueID:
-                    exp = """{0} = '{1}'""".format(arcpy.AddFieldDelimiters(sumtab, rf), ID)
+                    exp = """{0} = '{1}'""".format(arcpy.AddFieldDelimiters(sumtab, reference_field), ID)
                     print("Processing values for " + ID)
 
                     ##'''
@@ -1415,7 +1396,7 @@ for RiskLevel in RiskValues:
 
                 #  Creating Rainforest inputs
                 ##                    print "   Processing Rainforest data..."
-                ###                # Removing central Highlands areas from CSDL rainforest layer, will be using later rf data for this area.
+                ###                # Removing central Highlands areas from CSDL rainforest layer, will be using later reference_field data for this area.
                 ##                    if not arcpy.Exists("RF_ALL"):
                 ##                        print "   Creating one-off rainforest data.."
                 ##                        arcpy.analysis.Erase(in_RFPOLY, in_RFCLIP, "xtemprfpoly")
@@ -1750,7 +1731,7 @@ for RiskLevel in RiskValues:
 
                 arcpy.management.MakeFeatureLayer("tempflora", "floralyr")
                 # Selecting rare flora species from a table list
-                arcpy.management.SelectLayerByAttribute("floralyr", "NEW_SELECTION", rarelistquery)
+                arcpy.management.SelectLayerByAttribute("floralyr", "NEW_SELECTION", rarelist_query)
                 arcpy.management.SelectLayerByAttribute("floralyr", "ADD_TO_SELECTION", Floraexp)
                 # arcpy.management.CopyFeatures("floralyr", "xtempfl25")
                 arcpy.analysis.SpatialJoin("floralyr", "DAP_buff50", "tempfl25", join_operation="JOIN_ONE_TO_MANY",
@@ -1765,7 +1746,7 @@ for RiskLevel in RiskValues:
 
                 arcpy.management.MakeFeatureLayer("tempflora", "floralyr")
                 # Selecting rare flora species from a table list
-                arcpy.management.SelectLayerByAttribute("floralyr", "NEW_SELECTION",rarelistquery)
+                arcpy.management.SelectLayerByAttribute("floralyr", "NEW_SELECTION",rarelist_query)
                 arcpy.management.SelectLayerByAttribute("floralyr", "ADD_TO_SELECTION", Floraexp)
                 # arcpy.management.CopyFeatures("floralyr", "xtempfl25")
                 arcpy.analysis.SpatialJoin("floralyr", "JFMP_BioContingencyBuff", "tempfl25",
@@ -2030,7 +2011,7 @@ for RiskLevel in RiskValues:
             arcpy.management.Delete("tempmsd")
 
             print("   Processing Rainforest data...")
-            #                # Removing central Highlands areas from CSDL rainforest layer, will be using later rf data for this area.
+            #                # Removing central Highlands areas from CSDL rainforest layer, will be using later reference_field data for this area.
             if not arcpy.Exists("RF_ALL"):
                 print("   Creating one-off rainforest data..")
                 arcpy.analysis.Erase(in_RFPOLY, in_RFCLIP, "xtemprfpoly")
@@ -2578,7 +2559,7 @@ for RiskLevel in RiskValues:
                                                     "Value_ID"]) as iCur:
                     for rows in sCur:
                         # Use insert cursor to add and populate table records - match the row number from DAP_tab in same sequence as the fields for the Values Summary Table
-                        iCur.insertRow((rows[0], rows[9], rows[1], rows[2], StartDate, rows[3], rows[4], rows[5],
+                        iCur.insertRow((rows[0], rows[9], rows[1], rows[2], start_date, rows[3], rows[4], rows[5],
                                         rows[6], rows[7], rows[8], rows[10]))  #
 
         # Biodiversity table values
@@ -2829,14 +2810,14 @@ if int(arcpy.management.GetCount(hertab2)[0]) > 0:
 
     # Add LandInfo to Work Details table
 
-    arcpy.management.JoinField("works_shapefile", "DAP_REF_NO", "DAP_Heritage_LandInfo", "UNIQUE_ID",
+    arcpy.management.JoinField("works_features", "DAP_REF_NO", "DAP_Heritage_LandInfo", "UNIQUE_ID",
                                ["CH_SENS", "MITIGATION", "LAND_MANGR", "JointManagedPark", "PV_District", "CH_RAP",
                                 "SITES_EXIST", "SCRIPT_DATE"])
 
     # add to template for QB consistency
-    arcpy.management.Append("works_shapefile", worksfc, "NO_TEST")
+    arcpy.management.Append("works_features", worksfc, "NO_TEST")
 else:  # if no heritage has been checked, works detail still appends to template, ignoring any blank fields
-    arcpy.management.Append("works_shapefile", worksfc, "NO_TEST")
+    arcpy.management.Append("works_features", worksfc, "NO_TEST")
 
 ############ NATIVE TITLE CALCULATION HERE
 if (int(arcpy.management.GetCount(hertab2)[0]) > 0 and int(arcpy.management.GetCount(sumtab)[
@@ -3513,21 +3494,21 @@ if arcpy.Exists("DAP_Heritage_SiteInfo"):
 tabkeepers = (tab for tab in tabs2keep if (arcpy.Exists(tab) and int(arcpy.management.GetCount(tab)[0]) > 0))
 for excel in tabkeepers:
     arcpy.conversion.TableToExcel(excel,
-                                  workpath + "\\" + str(StartDate) + str(dist) + mode + "_" + str(excel)[4:] + ".xlsx",
+                                  workpath + "\\" + str(start_date) + str(dist) + mode + "_" + str(excel)[4:] + ".xlsx",
                                   "ALIAS")
-    print("   Saving " + workpath + "\\" + str(StartDate) + str(dist) + mode + "_" + str(excel)[4:])
+    print("   Saving " + workpath + "\\" + str(start_date) + str(dist) + mode + "_" + str(excel)[4:])
 
-arcpy.conversion.TableToExcel(worksfc, workpath + "\\" + str(StartDate) + str(dist) + mode + "_WorksDetail.xlsx",
+arcpy.conversion.TableToExcel(worksfc, workpath + "\\" + str(start_date) + str(dist) + mode + "_WorksDetail.xlsx",
                               "ALIAS")
-print("   Saving " + workpath + "\\" + str(StartDate) + str(dist) + mode + "_WorksDetail")
+print("   Saving " + workpath + "\\" + str(start_date) + str(dist) + mode + "_WorksDetail")
 
 if arcpy.Exists("VBA_outputs"):
     arcpy.conversion.FeatureClassToFeatureClass("VBA_outputs", workpath,
-                                                str(StartDate) + str(dist) + mode + "_VBA_Outputs.shp")
-    print("   Saving " + workpath + "\\" + str(StartDate) + str(dist) + mode + "_VBA_Outputs")
+                                                str(start_date) + str(dist) + mode + "_VBA_Outputs.shp")
+    print("   Saving " + workpath + "\\" + str(start_date) + str(dist) + mode + "_VBA_Outputs")
 
 ### Save works as individual shapefiles to be zipped and uploaded onto ECM for later
-if Makeshapefile == True:
+if output_shapefile == True:
     print("Making individual shapefiles...")
     try:
         if mode == 'JFMP':
@@ -3540,11 +3521,11 @@ if Makeshapefile == True:
 
 # convert .xls to .csv here
 for xls in glob.iglob(os.path.join(workpath, '*.xlsx')):
-    #xls = str(StartDate) + str(dist) + mode + "_" + str(excel)[4:] + ".xlsx"
+    #xls = str(start_date) + str(dist) + mode + "_" + str(excel)[4:] + ".xlsx"
     read_file = pd.read_excel(xls)
     read_file.to_csv(xls[:-5] + '.csv', index=False, header=True, encoding='utf-8')
     os.remove(xls)
-    #xls2 = str(StartDate) + str(dist) + mode + "_WorksDetail.xlsx"
+    #xls2 = str(start_date) + str(dist) + mode + "_WorksDetail.xlsx"
     #read_file = pd.read_excel(xls2)
 
 #read_file.to_csv(xls2[:-5] + '.csv', header=True, encoding='utf-8')
@@ -3685,11 +3666,10 @@ for xls in glob.iglob(os.path.join(workpath, '*.xlsx')):
 #     os.remove(xls)
 print("Successfully finished")
 
-End = datetime.datetime.now()
-duration = End - Start
-DAPCount = arcpy.management.GetCount(worksfc)
-ScriptRef = str(StartDate) + str(dist) + mode
-print("Processing time: Start: " + StartTime + "   Finish: " + (End.strftime("%H:%M:%S")))
-print("Time taken to process: " + str(duration))
-print("Features processed: " + str(DAPCount))
-print("Script reference: " + ScriptRef)
+ended_time = datetime.datetime.now()
+duration = ended_time - started_time
+features_processed = arcpy.management.GetCount(worksfc)
+print(f"Processing time: Start: {start_time}   Finish: {ended_time.strftime('%H:%M:%S')}")
+print(f"Time taken to process: {duration}")
+print(f"Features processed: {features_processed}")
+print(f"Script reference: {start_date}{district_name}{mode}")
